@@ -19,7 +19,7 @@ static const uint16_t JBD_BMS_SERVICE_UUID = 0xFF00;
 static const uint16_t JBD_BMS_NOTIFY_CHARACTERISTIC_UUID = 0xFF01;
 static const uint16_t JBD_BMS_CONTROL_CHARACTERISTIC_UUID = 0xFF02;
 
-static const uint16_t MAX_RESPONSE_SIZE = 41;
+static const uint16_t MAX_RESPONSE_SIZE = 128;
 
 static const uint8_t JBD_PKT_START = 0xDD;
 static const uint8_t JBD_PKT_END = 0x77;
@@ -304,14 +304,23 @@ void JbdBmsBle::assemble(const uint8_t *data, uint16_t length) {
 
   this->frame_buffer_.insert(this->frame_buffer_.end(), data, data + length);
 
-  if (this->frame_buffer_.size() >= 7 && this->frame_buffer_[0] == JBD_PKT_START &&
-      this->frame_buffer_.back() == JBD_PKT_END) {
+  if (this->frame_buffer_.size() > MAX_RESPONSE_SIZE) {
+    ESP_LOGW(TAG, "Maximum response size exceeded");
+    this->frame_buffer_.clear();
+    return;
+  }
+
+  if (this->frame_buffer_.size() >= 4 && this->frame_buffer_[0] == JBD_PKT_START) {
     const uint8_t *raw = &this->frame_buffer_[0];
     uint8_t function = raw[1];
     uint16_t data_len = raw[3];
     uint16_t frame_len = 4 + data_len + 3;
 
-    if (frame_len == this->frame_buffer_.size()) {
+    if (this->frame_buffer_.size() < frame_len) {
+      return;
+    }
+
+    if (frame_len == this->frame_buffer_.size() && raw[frame_len - 1] == JBD_PKT_END) {
       uint16_t computed_crc = chksum_(raw + 2, data_len + 2);
       uint16_t remote_crc = uint16_t(raw[frame_len - 3]) << 8 | (uint16_t(raw[frame_len - 2]) << 0);
 
