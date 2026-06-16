@@ -316,6 +316,24 @@ void JbdBmsBle::assemble(const uint8_t *data, uint16_t length) {
     uint16_t data_len = raw[3];
     uint16_t frame_len = 4 + data_len + 3;
 
+    if (this->frame_buffer_.size() >= 7 && this->frame_buffer_.back() == JBD_PKT_END &&
+        this->frame_buffer_.size() < frame_len) {
+      uint16_t actual_frame_len = this->frame_buffer_.size();
+      uint16_t actual_data_len = actual_frame_len - 7;
+      uint16_t computed_crc = chksum_(raw + 2, actual_data_len + 2);
+      uint16_t remote_crc = uint16_t(raw[actual_frame_len - 3]) << 8 | (uint16_t(raw[actual_frame_len - 2]) << 0);
+
+      if (computed_crc == remote_crc) {
+        ESP_LOGW(TAG, "Accepting truncated frame: header expected %d bytes, received %d", frame_len, actual_frame_len);
+        std::vector<uint8_t> frame_data(this->frame_buffer_.begin() + 4, this->frame_buffer_.end() - 3);
+        this->on_jbd_bms_data(function, frame_data);
+      } else {
+        ESP_LOGW(TAG, "Invalid frame length: expected %d, got %zu", frame_len, this->frame_buffer_.size());
+      }
+      this->frame_buffer_.clear();
+      return;
+    }
+
     if (this->frame_buffer_.size() < frame_len) {
       return;
     }
@@ -531,6 +549,11 @@ void JbdBmsBle::on_hardware_info_data_(const std::vector<uint8_t> &data) {
   ESP_LOGI(TAG, "Hardware info frame (%zu bytes) received", data.size());
   ESP_LOGVV(TAG, "  %s", format_hex_pretty(&data.front(), data.size()).c_str());  // NOLINT
 
+  if (data.size() < 23) {
+    ESP_LOGW(TAG, "Skipping hardware info frame because of invalid length: %zu", data.size());
+    return;
+  }
+
   ESP_LOGD(TAG, "  Device model: %s", this->device_model_.c_str());
 
   // Byte Len  Payload                Content              Coeff.      Unit        Example value
@@ -619,7 +642,9 @@ void JbdBmsBle::on_hardware_info_data_(const std::vector<uint8_t> &data) {
   // 23    2   0x0B 0x8D              Temperature 1
   // 25    2   0x0B 0x8C              Temperature 2
   // 27    2   0x0B 0x88              Temperature 3
+  uint8_t available_temperature_sensors = (data.size() - 23) / 2;
   uint8_t temperature_sensors = std::min(data[22], (uint8_t) 6);
+  temperature_sensors = std::min(temperature_sensors, available_temperature_sensors);
   this->publish_state_(this->temperature_sensors_sensor_, temperature_sensors);
   for (uint8_t i = 0; i < temperature_sensors; i++) {
     this->publish_state_(this->temperatures_[i].temperature_sensor_,
